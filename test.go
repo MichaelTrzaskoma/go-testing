@@ -11,6 +11,15 @@ import (
 	"strings"
 )
 
+var templateHost string = "localhost"
+var templatePort string = "19000"
+var templateProtocol string = "http"
+var templateWG string = "default"
+
+var baseUrl = templateProtocol + "://" + templateHost + ":" + templatePort
+
+type CribConfig map[string]interface{}
+
 // Action
 type Action string
 
@@ -115,7 +124,7 @@ func (e WorkerGroupList) String() string {
 }
 
 func tokenApiCall() string {
-	url := "http://localhost:19000/api/v1/auth/login"
+	url := baseUrl + "/api/v1/auth/login"
 	authBody := map[string]string{"username": "admin", "password": "Test1234"}
 	authBodyJson, _ := json.Marshal(authBody)
 	client := &http.Client{}
@@ -147,7 +156,7 @@ func tokenApiCall() string {
 }
 
 func getWorkerGroups(token string) {
-	url := "http://localhost:19000/api/v1/master/groups"
+	url := baseUrl + "/api/v1/master/groups"
 
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", url, nil)
@@ -170,6 +179,85 @@ func getWorkerGroups(token string) {
 	}
 }
 
+func getSource(token string) CribConfig {
+	url := baseUrl + "/api/v1/m/" + templateWG + "/system/inputs/splunk_uf"
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header = http.Header{"Authorization": {token}}
+	resp, err := client.Do(req)
+
+	if err != nil {
+		fmt.Println(err.Error())
+		return nil
+
+	} else {
+		// Read Body
+		responseData, err := io.ReadAll(resp.Body)
+		//Handling Read error
+		if err != nil {
+			fmt.Println(err.Error())
+			return nil
+		}
+		//var result map[string]interface{}
+
+		// _ = json.Unmarshal([]byte(responseData), &result)
+		var response struct {
+			Items []CribConfig `json:"items"`
+			Count int          `json:"count"`
+		}
+
+		_ = json.Unmarshal([]byte(responseData), &response)
+
+		fmt.Println(string(responseData))
+
+		delete(response.Items[0], "status")
+		delete(response.Items[0], "notifications")
+		// fmt.Println(response.Items[0])
+
+		return response.Items[0]
+
+		// response.Items[0]["id"] = "test"
+		// response.Items[0]["port"] = 1923
+
+		// jsonBytes, _ := json.Marshal(response.Items[0])
+		// jsonString := string(jsonBytes)
+
+		// fmt.Println(jsonString)
+		// // fmt.Println((result["items"]))
+
+		// url_2 := base_url + "/api/v1/m/" + template_wg + "/system/inputs"
+
+		// sourceBodyJson, _ := json.Marshal(response.Items[0])
+		// req, _ := http.NewRequest("POST", url_2, bytes.NewBuffer(sourceBodyJson))
+		// req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
+		// resp, _ := client.Do(req)
+		// responseData_2, _ := io.ReadAll(resp.Body)
+		// fmt.Println(string(responseData_2))
+
+	}
+}
+
+func createSource(baseApiUrl string, workerGroup string, token string, sourceConfig []byte) {
+	client := &http.Client{}
+	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/inputs"
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(sourceConfig))
+	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
+	resp, _ := client.Do(req)
+	responseData_2, _ := io.ReadAll(resp.Body)
+	fmt.Println(string(responseData_2))
+}
+
+func updateSource(baseApiUrl string, workerGroup string, token string, sourceConfig []byte) {
+	client := &http.Client{}
+	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/inputs/test"
+	req, _ := http.NewRequest("PATCH", url, bytes.NewBuffer(sourceConfig))
+	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
+	resp, _ := client.Do(req)
+	responseData_2, _ := io.ReadAll(resp.Body)
+	fmt.Println(string(responseData_2))
+}
+
 func main() {
 
 	flag.Var(&action, "action", "Set the action (Create, Update, or Delete)")
@@ -184,9 +272,17 @@ func main() {
 	fmt.Println("Selected id:", id)
 	fmt.Println("Selected worker group(s) are:", wgList)
 
-	val := tokenApiCall()
-	fmt.Println("Token here:", val)
+	token := tokenApiCall()
+	//fmt.Println("Token here:", val)
 
-	getWorkerGroups(val)
+	getWorkerGroups(token)
+	getSourceConfig := getSource(token)
+	fmt.Print(getSourceConfig)
+
+	getSourceConfig["id"] = "test"
+	getSourceConfig["port"] = 1943
+	sourceConfigBytes, _ := json.Marshal(getSourceConfig)
+	//createSource(baseUrl, templateWG, token, sourceConfigBytes)
+	updateSource(baseUrl, templateWG, token, sourceConfigBytes)
 
 }
