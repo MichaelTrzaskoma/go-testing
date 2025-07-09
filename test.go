@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -125,140 +126,204 @@ func (e *WorkerGroupList) Set(s string) error {
 func (e WorkerGroupList) String() string {
 	return strings.Join(e, ", ")
 }
+func retryHttp(client *http.Client, req *http.Request, retryCount int) (*http.Response, error) {
+	var (
+		retries int = retryCount
+		resp    *http.Response
+		err     error
+	)
 
-func tokenApiCall(baseUrl string, username string, password string) string {
+	for retries > 0 {
+		resp, err = client.Do(req)
+
+		if err != nil {
+			retries -= 1
+		} else {
+			break
+		}
+	}
+
+	return resp, err
+}
+
+func tokenApiCall(baseUrl string, username string, password string) (string, error) {
 	url := baseUrl + "/api/v1/auth/login"
 	authBody := map[string]string{"username": username, "password": password}
 	authBodyJson, _ := json.Marshal(authBody)
 	client := &http.Client{}
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(authBodyJson))
 	req.Header = http.Header{"content-type": {"application/json"}}
-	resp, err := client.Do(req)
-	// Handling response error
-	if err != nil {
-		fmt.Println(err.Error())
-		return ""
-	} else {
-		// Read Body
-		responseData, err := io.ReadAll(resp.Body)
-		//Handling Read error
-		if err != nil {
-			fmt.Println(err.Error())
+
+	var (
+		maxRetries int = 5
+		resp       *http.Response
+		httpErr    error
+	)
+
+	resp, httpErr = retryHttp(client, req, maxRetries)
+
+	if resp != nil && httpErr == nil {
+		defer resp.Body.Close()
+
+		responseData, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", fmt.Errorf("unable to properly read response body %w", readErr)
 		}
 
 		// Struct for Response, caring about token
 		type Token struct {
 			Token string `json:"token"`
 		}
+		var tok Token
 
-		var t Token
-		json.Unmarshal(responseData, &t)
+		unMarshErr := json.Unmarshal(responseData, &tok)
+		if unMarshErr != nil {
+			return "", fmt.Errorf("unable to extract token value from respones body: %w", unMarshErr)
+		}
 
-		return "Bearer " + t.Token
+		return "Bearer " + tok.Token, nil
+	} else {
+		return "", fmt.Errorf("token unable to be retrieved from url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
 	}
+	// Handling response error
 }
 
-func getWorkerGroups(baseUrl string, token string) {
+func getWorkerGroups(baseUrl string, token string) ([]byte, error) {
 	url := baseUrl + "/api/v1/master/groups"
 
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header = http.Header{"Authorization": {token}}
-	resp, err := client.Do(req)
 
-	if err != nil {
-		fmt.Println(err.Error())
+	var (
+		maxRetries int = 5
+		resp       *http.Response
+		httpErr    error
+	)
 
-	} else {
-		// Read Body
-		responseData, err := io.ReadAll(resp.Body)
-		//Handling Read error
-		if err != nil {
-			fmt.Println(err.Error())
+	resp, httpErr = retryHttp(client, req, maxRetries)
+
+	if resp != nil && httpErr == nil {
+		defer resp.Body.Close()
+
+		responseData, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("unable to properly read response body %w", readErr)
+		} else {
+			return responseData, nil
 		}
-
-		fmt.Println(string(responseData))
-
+	} else {
+		return nil, fmt.Errorf("worker groups unable to be retrieved from url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
 	}
 }
 
-func getLookupContent(baseApiUrl string, workerGroup string, token string, lookup_id string) []byte {
-	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/lookups/" + lookup_id + "/content?raw=0"
+func getLookupContent(baseApiUrl string, workerGroup string, token string, lookupId string) ([]byte, error) {
+	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/lookups/" + lookupId + "/content?raw=0"
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
-	resp, err := client.Do(req)
 
-	if err != nil {
-		fmt.Println(err.Error())
-		return nil
-	} else {
-		// Read Body
-		responseData, err := io.ReadAll(resp.Body)
-		//Handling Read error
-		if err != nil {
-			fmt.Println(err.Error())
+	var (
+		maxRetries int = 5
+		resp       *http.Response
+		httpErr    error
+	)
 
+	resp, httpErr = retryHttp(client, req, maxRetries)
+
+	if resp != nil && httpErr == nil {
+		defer resp.Body.Close()
+
+		responseData, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("unable to properly read response body %w", readErr)
 		}
 
-		// var response struct {
-		// 	Items []CribConfig `json:"items"`
-		// 	Count int          `json:"count"`
-		// }
-
-		fmt.Println(string(responseData))
-		return responseData
+		return responseData, nil
+	} else {
+		return nil, fmt.Errorf("lookup content for %s unable to be retrieved from url %s : %w Attempted (%d) time(s)", lookupId, url, httpErr, maxRetries)
 	}
 
 }
 
-func uploadLookup(baseApiUrl string, workerGroup string, token string, lookup_id string, lookupContent []byte) []byte {
+func uploadLookup(baseApiUrl string, workerGroup string, token string, lookup_id string, lookupContent []byte) ([]byte, error) {
 	client := &http.Client{}
 	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/lookups/?filename=" + lookup_id
 	//objectConfigBytes, _ := json.Marshal(responseData)
 	req, _ := http.NewRequest("PUT", url, bytes.NewBuffer(lookupContent))
 	req.Header = http.Header{"Authorization": {token}, "content-type": {"text/csv"}}
-	resp, _ := client.Do(req)
-	responseData, _ := io.ReadAll(resp.Body)
 
-	fmt.Println(string(responseData))
+	var (
+		maxRetries int = 5
+		resp       *http.Response
+		httpErr    error
+	)
 
-	var lookupPayloadFileinfo struct {
-		FileName string `json:"filename"`
+	resp, httpErr = retryHttp(client, req, maxRetries)
+
+	if resp != nil && httpErr == nil {
+		responseData, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("unable to properly read response body %w", readErr)
+		}
+
+		var lookupPayloadFileinfo struct {
+			FileName string `json:"filename"`
+		}
+
+		type fileInfo struct {
+			Filename string `json:"filename"`
+		}
+
+		type LookupPayload struct {
+			Id       string   `json:"id"`
+			FileInfo fileInfo `json:"fileInfo"`
+		}
+
+		unMarshErr := json.Unmarshal([]byte(responseData), &lookupPayloadFileinfo)
+		if unMarshErr != nil {
+			return nil, fmt.Errorf("unable to extract lookup upload details from respones body: %w", unMarshErr)
+		}
+
+		lookupApiPayload := LookupPayload{
+			Id: lookup_id,
+			FileInfo: fileInfo{
+				Filename: lookupPayloadFileinfo.FileName,
+			},
+		}
+
+		lookUpPayloadJson, marshErr := json.Marshal(lookupApiPayload)
+		if marshErr != nil {
+			return nil, fmt.Errorf("unable to format upload payload to be used for patching: %w", marshErr)
+		}
+
+		return lookUpPayloadJson, nil
+	} else {
+		return nil, fmt.Errorf("uploading lookup failed when trying url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
 	}
 
-	type fileInfo struct {
-		Filename string `json:"filename"`
-	}
-	type LookupPayload struct {
-		Id       string   `json:"id"`
-		FileInfo fileInfo `json:"fileInfo"`
-	}
-	_ = json.Unmarshal([]byte(responseData), &lookupPayloadFileinfo)
-
-	lookupApiPayload := LookupPayload{
-		Id: lookup_id,
-		FileInfo: fileInfo{
-			Filename: lookupPayloadFileinfo.FileName,
-		},
-	}
-
-	lookUpPayloadJson, _ := json.Marshal(lookupApiPayload)
-	return lookUpPayloadJson
 }
 
-func patchLookup(baseApiUrl string, workerGroup string, token string, lookup_id string, patchPayload []byte) {
+func patchLookup(baseApiUrl string, workerGroup string, token string, lookup_id string, patchPayload []byte) error {
 	client := &http.Client{}
-	url := baseApiUrl + "/api/v1/m/" + "GroupA" + "/system/lookups/" + lookup_id
+	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/lookups/" + lookup_id
 	req, _ := http.NewRequest("PATCH", url, bytes.NewBuffer(patchPayload))
 	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
-	resp, _ := client.Do(req)
-	responseData, _ := io.ReadAll(resp.Body)
-	print(responseData)
+	var (
+		maxRetries int = 5
+		// resp       *http.Response
+		httpErr error
+	)
 
+	_, httpErr = retryHttp(client, req, maxRetries)
+	if httpErr != nil {
+		return fmt.Errorf("patching lookup failed when trying url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
+	} else {
+		return nil
+	}
 }
 
-func getDataObj(baseApiUrl string, workerGroup string, token string, id string, objType string) CribConfig {
+func getDataObj(baseApiUrl string, workerGroup string, token string, id string, objType string) ([]byte, error) {
 
 	var objEndpoint string
 
@@ -280,19 +345,21 @@ func getDataObj(baseApiUrl string, workerGroup string, token string, id string, 
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header = http.Header{"Authorization": {token}}
-	resp, err := client.Do(req)
 
-	if err != nil {
-		fmt.Println(err.Error())
-		return nil
+	var (
+		maxRetries int = 5
+		resp       *http.Response
+		httpErr    error
+	)
 
-	} else {
-		// Read Body
-		responseData, err := io.ReadAll(resp.Body)
-		//Handling Read error
-		if err != nil {
-			fmt.Println(err.Error())
-			return nil
+	resp, httpErr = retryHttp(client, req, maxRetries)
+
+	if resp != nil && httpErr == nil {
+		defer resp.Body.Close()
+
+		responseData, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("unable to properly read response body %w", readErr)
 		}
 
 		var response struct {
@@ -300,19 +367,31 @@ func getDataObj(baseApiUrl string, workerGroup string, token string, id string, 
 			Count int          `json:"count"`
 		}
 
-		_ = json.Unmarshal([]byte(responseData), &response)
+		unMarshErr := json.Unmarshal([]byte(responseData), &response)
+		if unMarshErr != nil {
+			return nil, fmt.Errorf("unable to extract token value from respones body: %w", unMarshErr)
+		}
 
-		fmt.Println(string(responseData))
+		if len(response.Items) > 0 {
+			delete(response.Items[0], "status")
+			delete(response.Items[0], "notifications")
 
-		delete(response.Items[0], "status")
-		delete(response.Items[0], "notifications")
+			objectConfig, marshErr := json.Marshal(response.Items[0])
+			if marshErr != nil {
+				return nil, fmt.Errorf("unable to format get %s payload to be used for patching: %w", objType, marshErr)
+			}
+			return objectConfig, nil
 
-		return response.Items[0]
+		} else {
+			return nil, fmt.Errorf("%s content for %s returned empty from url %s", objType, id, url)
+		}
 
+	} else {
+		return nil, fmt.Errorf("%s content for %s unable to be retrieved from url %s : %w Attempted (%d) time(s)", objType, id, url, httpErr, maxRetries)
 	}
 }
 
-func updateDataObj(baseApiUrl string, workerGroup string, token string, id string, objConfig []byte, objType string) {
+func updateDataObj(baseApiUrl string, workerGroup string, token string, id string, objConfig []byte, objType string) error {
 	var objEndpoint string
 
 	switch strings.ToLower(objType) {
@@ -325,42 +404,71 @@ func updateDataObj(baseApiUrl string, workerGroup string, token string, id strin
 	case "globalvariable":
 		objEndpoint = "/lib/vars"
 	default:
-		fmt.Printf("invalid Object Type provided: %s. Valid options are: Source, Destination, Pipeline, Pack, GlobalVariable, or Lookup", objType)
+		log.Fatalf("invalid Object Type provided: %s. Valid options are: Source, Destination, Pipeline, Pack, GlobalVariable, or Lookup", objType)
 	}
 
 	client := &http.Client{}
 	url := baseApiUrl + "/api/v1/m/" + workerGroup + objEndpoint + "/" + id
 	req, _ := http.NewRequest("PATCH", url, bytes.NewBuffer(objConfig))
 	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
-	resp, _ := client.Do(req)
-	responseData, _ := io.ReadAll(resp.Body)
-	fmt.Println(string(responseData))
+	var (
+		maxRetries int = 5
+		//resp       *http.Response
+		httpErr error
+	)
+
+	_, httpErr = retryHttp(client, req, maxRetries)
+
+	if httpErr != nil {
+		return fmt.Errorf("patching lookup failed when trying url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
+	} else {
+		return nil
+	}
 }
 
 func relicateConfigPatch(origBaseApiUrl string, origWorkerGroup string, origToken string, targetBaseApiUrl string, targetWorkerGroups []string, targetToken string, objType string, objId string) {
 
 	switch strings.ToLower(objType) {
 	case "source", "destination", "pipeline", "globalvariable":
-		objectConfig := getDataObj(origBaseApiUrl, origWorkerGroup, origToken, objId, objType)
-		objectConfig["port"] = 1953 // testing
-		objectConfigBytes, _ := json.Marshal(objectConfig)
+		objectConfigBytes, getDataErr := getDataObj(origBaseApiUrl, origWorkerGroup, origToken, objId, objType)
+		if getDataErr != nil {
+			log.Fatalf("Fatal error encountered with initial GET for %s '%s': %v", objType, objId, getDataErr)
+		}
 		for _, workerGroup := range targetWorkerGroups {
-			updateDataObj(targetBaseApiUrl, workerGroup, targetToken, objId, objectConfigBytes, objType)
+			updateErr := updateDataObj(targetBaseApiUrl, workerGroup, targetToken, objId, objectConfigBytes, objType)
+			if updateErr != nil {
+				log.Printf("Skipped updating %s '%s' on worker group '%s' due to following error during patching: %v", objType, objId, workerGroup, updateErr)
+			} else {
+				log.Printf("Successfully updated %s '%s' on worker group %s", objType, objId, workerGroup)
+			}
 		}
 	case "lookup":
 		if strings.HasSuffix(objId, ".csv") {
-			objectContent := getLookupContent(origBaseApiUrl, origWorkerGroup, origToken, objId)
+			objectContent, getLookupErr := getLookupContent(origBaseApiUrl, origWorkerGroup, origToken, objId)
+			if getLookupErr != nil {
+				log.Fatalf("Fatal error encountered with initial GET for %s '%s': %v", objType, objId, getLookupErr)
+			}
 			for _, workerGroup := range targetWorkerGroups {
-				objectUpload := uploadLookup(targetBaseApiUrl, workerGroup, targetToken, objId, objectContent)
-				patchLookup(targetBaseApiUrl, workerGroup, targetToken, objId, objectUpload)
+				objectUpload, uploadErr := uploadLookup(targetBaseApiUrl, workerGroup, targetToken, objId, objectContent)
 
+				if uploadErr != nil {
+					log.Printf("Skipped updating %s '%s' on worker group '%s' due to following error during PUT: %v", objType, objId, workerGroup, uploadErr)
+					continue
+				}
+
+				patchErr := patchLookup(targetBaseApiUrl, workerGroup, targetToken, objId, objectUpload)
+				if patchErr != nil {
+					log.Printf("Skipped updating %s '%s' on worker group '%s' due to following error during PATCH: %v", objType, objId, workerGroup, patchErr)
+				} else {
+					log.Printf("Successfully updated %s '%s' on worker group '%s'", objType, objId, workerGroup)
+				}
 			}
 		} else {
 			fmt.Println("Error: Expected object Id for lookup to end with '.csv', invalid lookup submitted")
 		}
 
 	default:
-		fmt.Println("Not valid, ignored")
+		log.Fatalf("(%s) not valid object type, ignored", objType)
 	}
 }
 
@@ -411,14 +519,22 @@ func main() {
 	flag.Var(&wgList, "wgList", "List of worker groups to target")
 
 	flag.Parse()
-	fmt.Println("Selected action:", action)
-	fmt.Println("Selected env:", env)
-	fmt.Println("Selected object type:", objType)
-	fmt.Println("Selected id:", id)
-	fmt.Println("Selected worker group(s) are:", wgList)
+	log.Println("Selected action:", action)
+	log.Println("Selected env:", env)
+	log.Println("Selected object type:", objType)
+	log.Println("Selected object id:", id)
+	log.Println("Selected worker group(s) are:", wgList)
 
-	templateToken := tokenApiCall(templateUrl, templateUser, templatePass)
-	targetToken := tokenApiCall(targetUrl, targetUser, targetPass)
+	templateToken, tempTokenErr := tokenApiCall(templateUrl, templateUser, templatePass)
+
+	if tempTokenErr != nil {
+		log.Fatal("Fatal error encountered: ", tempTokenErr)
+	}
+
+	targetToken, targetTokenErr := tokenApiCall(targetUrl, targetUser, targetPass)
+	if targetTokenErr != nil {
+		log.Fatal("Fatal error encountered: ", targetTokenErr)
+	}
 	//fmt.Println("Token here:", val)
 
 	// getWorkerGroups(token)
