@@ -1,4 +1,4 @@
-module example/hello
+module criblPatching
 
 go 1.24.4
 
