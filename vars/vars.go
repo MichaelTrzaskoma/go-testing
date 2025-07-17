@@ -13,7 +13,7 @@ var InputAction Action
 
 func (a *Action) Set(s string) error {
 	switch strings.ToLower(s) {
-	case "uat", "prod":
+	case "create", "update":
 		*a = Action(s)
 		return nil
 	default:
@@ -31,14 +31,13 @@ type Env string
 var InputEnv Env
 
 func (e *Env) Set(s string) error {
-	// switch strings.ToLower(s) {
-	// case "uat", "prod":
-	// 	*e = Env(s)
-	// 	return nil
-	// default:
-	// 	return fmt.Errorf("invalid env: %s. Valid options are: Uat or Prod", s)
-	// }
-	return nil
+	switch strings.ToLower(s) {
+	case "uat", "prod":
+		*e = Env(s)
+		return nil
+	default:
+		return fmt.Errorf("invalid env: %s. Valid options are: Uat or Prod", s)
+	}
 }
 
 func (e *Env) String() string {

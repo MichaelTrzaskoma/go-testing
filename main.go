@@ -21,7 +21,7 @@ import (
 
 // Worker Group List for what is being targetted
 
-func relicateConfigPatch(origBaseApiUrl string, origWorkerGroup string, origToken string, targetBaseApiUrl string, targetWorkerGroups []string, targetToken string, objType string, objId string) {
+func replicateConfigPatch(origBaseApiUrl string, origWorkerGroup string, origToken string, targetBaseApiUrl string, targetWorkerGroups []string, targetToken string, objType string, objId string) {
 
 	switch strings.ToLower(objType) {
 	case "source", "destination", "pipeline", "globalvariable":
@@ -67,10 +67,83 @@ func relicateConfigPatch(origBaseApiUrl string, origWorkerGroup string, origToke
 	}
 }
 
-func main() {
-	var templateProtocol, templateHost, templatePort, templateWorkerGroup, templateUser, templatePass, targetProtocol, targetHost, targetPort, targetUser, targetPass, templateUrl, targetUrl string
+func replicateConfigCreate(origBaseApiUrl string, origWorkerGroup string, origToken string, targetBaseApiUrl string, targetWorkerGroups []string, targetToken string, objType string, objId string) {
 
+	switch strings.ToLower(objType) {
+	case "source", "destination", "pipeline", "globalvariable":
+		objectConfigBytes, getDataErr := functions.GetDataObj(origBaseApiUrl, origWorkerGroup, origToken, objId, objType)
+		if getDataErr != nil {
+			log.Fatalf("Fatal error encountered with initial GET for %s '%s': %v", objType, objId, getDataErr)
+		}
+		for _, workerGroup := range targetWorkerGroups {
+			updateErr := functions.CreateDataObj(targetBaseApiUrl, workerGroup, targetToken, objId, objectConfigBytes, objType)
+			if updateErr != nil {
+				log.Printf("Skipped creating %s '%s' on worker group '%s' due to the following error during creating: %v", objType, objId, workerGroup, updateErr)
+			} else {
+				log.Printf("Successfully created %s '%s' on worker group %s", objType, objId, workerGroup)
+			}
+		}
+	case "lookup":
+		if strings.HasSuffix(objId, ".csv") {
+			objectContent, getLookupErr := functions.GetLookupContent(origBaseApiUrl, origWorkerGroup, origToken, objId)
+			if getLookupErr != nil {
+				log.Fatalf("Fatal error encountered with initial GET for %s '%s': %v", objType, objId, getLookupErr)
+			}
+			for _, workerGroup := range targetWorkerGroups {
+				objectUpload, uploadErr := functions.UploadLookup(targetBaseApiUrl, workerGroup, targetToken, objId, objectContent)
+
+				if uploadErr != nil {
+					log.Printf("Skipped creating %s '%s' on worker group '%s' due to the following error during PUT: %v", objType, objId, workerGroup, uploadErr)
+					continue
+				}
+
+				patchErr := functions.CreateLookup(targetBaseApiUrl, workerGroup, targetToken, objId, objectUpload)
+				if patchErr != nil {
+					log.Printf("Skipped creating %s '%s' on worker group '%s' due to the following error during PATCH: %v", objType, objId, workerGroup, patchErr)
+				} else {
+					log.Printf("Successfully created %s '%s' on worker group '%s'", objType, objId, workerGroup)
+				}
+			}
+		} else {
+			fmt.Println("Error: Expected object Id for lookup to end with '.csv', invalid lookup submitted")
+		}
+
+	default:
+		log.Fatalf("(%s) not valid object type, ignored", objType)
+	}
+}
+func main() {
+	var (
+		templateProtocol, templateHost, templatePort, templateWorkerGroup, templateUser, templatePass, targetProtocol, targetHost, targetPort, targetUser, targetPass, templateUrl, targetUrl string
+		//action vars.Action
+		env      vars.Env
+		action   vars.Action
+		objType  vars.ObjType
+		objId    vars.Id
+		targetWG vars.WorkerGroupList
+	)
 	// Global Var Loading
+	flag.Var(&env, "env", "Set the env (Uat or Prod)")
+	flag.Var(&action, "action", "Set the action (Create or Update)")
+	flag.Var(&objType, "objType", "Defines the object type of the configuration item that we are targeting (Source, Destination, Pipeline, Pack, GlobalVariable, or Lookup)")
+	flag.Var(&objId, "id", "Set the id for configuration item you're looking to target")
+	flag.Var(&targetWG, "wgList", "List of worker groups to target")
+
+	flag.Parse()
+
+	var missingFlags []string
+	flag.VisitAll(func(f *flag.Flag) {
+		fmt.Println(f.Name)
+		fmt.Println(f.Value)
+		if f.Value.String() == "" {
+			missingFlags = append(missingFlags, f.Name)
+			//fmt.Println(f.Name, "not set!")
+		}
+	})
+	if len(missingFlags) != 0 {
+		log.Fatalf("The following flags are missing: [%v]. Refer to -help or -h for details on the expected flags", strings.Join(missingFlags, ", "))
+	}
+
 	err := godotenv.Load()
 	if err != nil {
 		fmt.Println("Error loading .env file, relying on environment variables alone")
@@ -82,18 +155,16 @@ func main() {
 	templateUser = os.Getenv("TEMPLATE_API_USERNAME")
 	templatePass = os.Getenv("TEMPLATE_API_PASSWORD")
 
-	flag.Var(&vars.InputEnv, "env", "Set the env (Uat or Prod)")
-
-	if strings.ToLower(string(vars.InputEnv)) == "prod" {
+	if strings.ToLower(string(env)) == "prod" {
 		targetProtocol = os.Getenv("PROD_API_PROTOCOL")
 		targetHost = os.Getenv("PROD_HOST")
 		targetPort = os.Getenv("PROD_PORT")
 		targetUser = os.Getenv("PROD_API_USERNAME")
 		targetPass = os.Getenv("PROD_API_PASSWORD")
 	} else {
-		if strings.ToLower(string(vars.InputEnv)) != "uat" {
-			vars.InputEnv = "UAT (Defaulted)"
-		}
+		// if strings.ToLower(string(env)) != "uat" {
+		// 	vars.InputEnv = "UAT (Defaulted)"
+		// }
 		targetProtocol = os.Getenv("UAT_API_PROTOCOL")
 		targetHost = os.Getenv("UAT_HOST")
 		targetPort = os.Getenv("UAT_PORT")
@@ -111,14 +182,8 @@ func main() {
 		targetUrl = targetUrl + ":" + targetPort
 	}
 
-	// flag.Var(&action, "action", "Set the action (Create, Update, or Delete)")
-	flag.Var(&vars.InputObjType, "objType", "Defines the object type of the configuration item that we are targeting (Source, Destination, Pipeline, Pack, GlobalVariable, or Lookup)")
-	flag.Var(&vars.InputId, "id", "Set the id for configuration item you're looking to target")
-	flag.Var(&vars.InputWgList, "wgList", "List of worker groups to target")
-
-	flag.Parse()
 	log.Print("Running tool with the following settings:")
-	log.Printf("Environment: (%s) | Action: (Update) | Object Type: (%s) | Object Id: (%s) | Target Worker Group(s): (%s)", vars.InputEnv, vars.InputObjType, vars.InputId, vars.InputWgList)
+	log.Printf("Environment: (%s) | Action: (%s) | Object Type: (%s) | Object Id: (%s) | Target Worker Group(s): (%s)", env, action, objType, objId, targetWG)
 
 	templateToken, tempTokenErr := functions.TokenApiCall(templateUrl, templateUser, templatePass)
 
@@ -133,15 +198,11 @@ func main() {
 	//fmt.Println("Token here:", val)
 
 	// getWorkerGroups(token)
-	relicateConfigPatch(templateUrl, templateWorkerGroup, templateToken, targetUrl, vars.InputWgList, targetToken, string(vars.InputObjType), string(vars.InputId))
-	// getLookup(baseUrl, "default", token, "test.csv")
-	// getSourceConfig := getSource(token)
-	// fmt.Print(getSourceConfig)
+	switch strings.ToLower(string(action)) {
+	case "create":
+		replicateConfigCreate(templateUrl, templateWorkerGroup, templateToken, targetUrl, targetWG, targetToken, string(objType), string(objId))
+	case "update":
+		replicateConfigPatch(templateUrl, templateWorkerGroup, templateToken, targetUrl, targetWG, targetToken, string(objType), string(objId))
 
-	// getSourceConfig["id"] = "test"
-	// getSourceConfig["port"] = 1943
-	// sourceConfigBytes, _ := json.Marshal(getSourceConfig)
-	// //createSource(baseUrl, templateWG, token, sourceConfigBytes)
-	// updateSource(baseUrl, templateWG, token, sourceConfigBytes)
-
+	}
 }

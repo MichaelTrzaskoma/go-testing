@@ -21,12 +21,22 @@ func retryHttp(client *http.Client, req *http.Request, retryCount int) (*http.Re
 
 	for retries > 0 {
 		resp, err = client.Do(req)
-
-		if err != nil {
+		if err != nil && resp.StatusCode != http.StatusOK {
 			retries -= 1
 		} else {
 			break
 		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		bodyResp, _ := io.ReadAll(resp.Body)
+		var errorResponse struct {
+			Error string `json:"message"`
+		}
+
+		json.Unmarshal(bodyResp, &errorResponse)
+
+		err = fmt.Errorf("'%s'", errorResponse.Error)
 	}
 
 	return resp, err
@@ -99,7 +109,7 @@ func GetWorkerGroups(baseUrl string, token string) ([]byte, error) {
 			return responseData, nil
 		}
 	} else {
-		return nil, fmt.Errorf("worker groups unable to be retrieved from url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
+		return nil, fmt.Errorf("worker groups unable to be retrieved from url %s : %w, Attempted (%d) time(s)", url, httpErr, maxRetries)
 	}
 }
 
@@ -203,7 +213,26 @@ func PatchLookup(baseApiUrl string, workerGroup string, token string, lookup_id 
 
 	_, httpErr = retryHttp(client, req, maxRetries)
 	if httpErr != nil {
-		return fmt.Errorf("patching lookup failed when trying url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
+		return fmt.Errorf("patching lookup failed when trying url %s: %w Attempted (%d) time(s)", url, httpErr, maxRetries)
+	} else {
+		return nil
+	}
+}
+
+func CreateLookup(baseApiUrl string, workerGroup string, token string, lookup_id string, patchPayload []byte) error {
+	client := &http.Client{}
+	url := baseApiUrl + "/api/v1/m/" + workerGroup + "/system/lookups"
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(patchPayload))
+	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
+	var (
+		maxRetries int = 5
+		// resp       *http.Response
+		httpErr error
+	)
+
+	_, httpErr = retryHttp(client, req, maxRetries)
+	if httpErr != nil {
+		return fmt.Errorf("patching lookup failed when trying url %s: %w Attempted (%d) time(s)", url, httpErr, maxRetries)
 	} else {
 		return nil
 	}
@@ -273,7 +302,7 @@ func GetDataObj(baseApiUrl string, workerGroup string, token string, id string, 
 		}
 
 	} else {
-		return nil, fmt.Errorf("%s content for %s unable to be retrieved from url %s : %w Attempted (%d) time(s)", objType, id, url, httpErr, maxRetries)
+		return nil, fmt.Errorf("%s content for %s unable to be retrieved from url %s: %w Attempted (%d) time(s)", objType, id, url, httpErr, maxRetries)
 	}
 }
 
@@ -306,7 +335,42 @@ func UpdateDataObj(baseApiUrl string, workerGroup string, token string, id strin
 	_, httpErr = retryHttp(client, req, maxRetries)
 
 	if httpErr != nil {
-		return fmt.Errorf("patching lookup failed when trying url %s : %w Attempted (%d) time(s)", url, httpErr, maxRetries)
+		return fmt.Errorf("patching %s failed when trying url %s: %w, Attempted (%d) time(s)", objType, url, httpErr, maxRetries)
+	} else {
+		return nil
+	}
+}
+
+func CreateDataObj(baseApiUrl string, workerGroup string, token string, id string, objConfig []byte, objType string) error {
+	var objEndpoint string
+
+	switch strings.ToLower(objType) {
+	case "source":
+		objEndpoint = "/system/inputs"
+	case "destination":
+		objEndpoint = "/system/outputs"
+	case "pipeline":
+		objEndpoint = "/pipelines"
+	case "globalvariable":
+		objEndpoint = "/lib/vars"
+	default:
+		log.Fatalf("invalid Object Type provided: %s. Valid options are: Source, Destination, Pipeline, Pack, GlobalVariable, or Lookup", objType)
+	}
+
+	client := &http.Client{}
+	url := baseApiUrl + "/api/v1/m/" + workerGroup + objEndpoint
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(objConfig))
+	req.Header = http.Header{"Authorization": {token}, "content-type": {"application/json"}}
+	var (
+		maxRetries int = 5
+		//resp       *http.Response
+		httpErr error
+	)
+
+	_, httpErr = retryHttp(client, req, maxRetries)
+
+	if httpErr != nil {
+		return fmt.Errorf("posting %s failed when trying url %s: %w, Attempted (%d) time(s)", objType, url, httpErr, maxRetries)
 	} else {
 		return nil
 	}
